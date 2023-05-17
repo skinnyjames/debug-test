@@ -1,14 +1,131 @@
+class DebugData
+  @@messages = [] of String
+  @@expressions = [] of String
+  @@disconnect = false
+
+  def self.add_message(message)
+    @@messages << message
+  end
+
+  def self.disconnect
+    @@disconnect = true
+  end
+
+  def self.disconnected?
+    @@disconnect
+  end
+
+  def self.add_expression(expression)
+    @@expressions << expression
+  end
+
+  def self.messages
+    @@messages
+  end
+
+  def self.expressions
+    @@expressions
+  end
+end
+
+class DebugEmitter
+  @block : Proc(Crystal::ASTNode, Nil)?
+
+  def on_emit(&block : Proc(Crystal::ASTNode, Nil))
+    @block = block
+  end
+
+  def emit(callstack)
+    if node = callstack
+     @block.try(&.call(node))
+    end
+  end
+end
+
+class DebugServer
+  @@debug_server : UNIXServer?
+  
+  def start
+    spawn start_server(server)
+  end
+
+  def quit
+    server.close
+  end
+
+  def handle_client(client)
+    message = client.gets
+    puts "message: #{message}"
+    args = message.try(&.split("/")) || [nil, nil]
+    type = args[0]? || "Bad"
+    msg = args[1]? || "Bad"
+    if type == "RMBP"
+      DebugData.messages.delete(msg.strip)
+      client.puts "Removing breakpoint"
+    elsif type == "ADDBP"
+      DebugData.messages << msg.strip
+      client.puts "Adding breakpoint"
+    elsif type == "EXP"
+      DebugData.expressions << msg.strip
+      client.puts "Evaulating"
+    elsif type == "DIS"
+      DebugData.disconnect
+      client.puts "Disconnecting"
+    else
+      client.puts "Invalid"
+    end
+
+    client.close
+  end
+
+  def start_server(server)
+    while client = server.accept?
+      handle_client(client)
+    end
+  end
+
+  def server : UNIXServer
+    @@debug_server ||= UNIXServer.new("debug.sock")
+  end
+end
+
 class Crystal::Repl
   property prelude : String = "prelude"
   getter program : Program
   getter context : Context
+  getter server : DebugServer
+
 
   def initialize
     @program = Program.new
     @context = Context.new(@program)
     @main_visitor = MainVisitor.new(@program)
+    @emitter = DebugEmitter.new
+    @debug_channel = Channel(Symbol).new
+    @server = DebugServer.new
+    @interpreter = Interpreter.new(@context, emitter: @emitter)
 
-    @interpreter = Interpreter.new(@context)
+    @emitter.on_emit do |node|
+      begin
+        filename = node.location.try(&.filename)
+        lineno = node.location.try(&.line_number)
+        
+        match = "#{filename}:#{lineno}"
+
+        if DebugData.messages.includes?(match)
+          STDOUT.puts "Breaking on #{match}\n"
+        end
+
+        while DebugData.messages.includes?(match) && !DebugData.disconnected?
+          if code = DebugData.expressions.shift?
+            value = run_code(code)
+            STDOUT.puts SyntaxHighlighter::Colorize.highlight!(value.to_s) 
+          end
+        end
+      rescue ex : Exception
+        puts ex
+      end
+    end
   end
 
   def run
@@ -45,14 +162,20 @@ class Crystal::Repl
   end
 
   def run_file(filename, argv)
+
     @interpreter.argv = argv
 
     prelude_node = parse_prelude
+
+    server.start
+
     other_node = parse_file(filename)
     file_node = FileNode.new(other_node, filename)
     exps = Expressions.new([prelude_node, file_node] of ASTNode)
-
+    
     interpret_and_exit_on_error(exps)
+
+    server.quit
 
     # Explicitly call exit at the end so at_exit handlers run
     interpret_exit
@@ -79,6 +202,7 @@ class Crystal::Repl
 
     node = @program.normalize(node)
     node = @program.semantic(node, main_visitor: @main_visitor)
+
     @interpreter.interpret(node, @main_visitor.meta_vars)
   end
 

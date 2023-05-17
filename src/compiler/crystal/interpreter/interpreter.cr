@@ -113,7 +113,9 @@ class Crystal::Repl::Interpreter
   def initialize(
     @context : Context,
     # TODO: what if the stack is exhausted?
-    @stack : UInt8* = Pointer(Void).malloc(8 * 1024 * 1024).as(UInt8*)
+    @stack : UInt8* = Pointer(Void).malloc(8 * 1024 * 1024).as(UInt8*),
+    *,
+    @emitter : DebugEmitter? = nil
   )
     @local_vars = LocalVars.new(@context)
     @argv = [] of String
@@ -337,6 +339,13 @@ class Crystal::Repl::Interpreter
         Disassembler.disassemble_one(@context, instructions, offset, current_local_vars, STDOUT)
         puts
       {% end %}
+
+      # NO WAMMYS
+      offset = (ip - instructions.instructions.to_unsafe).to_i32
+      if node = instructions.nodes[offset]?
+        # emit the instruction stuff no whammys
+        @emitter.try(&.emit(node))
+      end
 
       if @pry
         pry_max_target_frame = @pry_max_target_frame
