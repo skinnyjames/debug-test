@@ -43,7 +43,7 @@ class DebugEmitter
 end
 
 class DebugServer
-  @@debug_server : UNIXServer?
+  @@debug_server : TCPServer?
   
   def start
     spawn start_server(server)
@@ -54,38 +54,37 @@ class DebugServer
   end
 
   def handle_client(client)
+    client.sync = true
     message = client.gets
-    puts "message: #{message}"
     args = message.try(&.split("/")) || [nil, nil]
     type = args[0]? || "Bad"
     msg = args[1]? || "Bad"
     if type == "RMBP"
       DebugData.messages.delete(msg.strip)
-      client.puts "Removing breakpoint"
+      #client.puts "Removing breakpoint\n"
     elsif type == "ADDBP"
       DebugData.messages << msg.strip
-      client.puts "Adding breakpoint"
+      #client.puts "Adding breakpoint\n"
     elsif type == "EXP"
       DebugData.expressions << msg.strip
-      client.puts "Evaulating"
+      #client.puts "Evaulating\n"
     elsif type == "DIS"
       DebugData.disconnect
-      client.puts "Disconnecting"
+      #client.puts "Disconnecting\n"
     else
-      client.puts "Invalid"
+      puts "Invalid"
+      #client.puts "Invalid\n"
     end
-
-    client.close
   end
 
   def start_server(server)
     while client = server.accept?
-      handle_client(client)
+      spawn handle_client(client)
     end
   end
 
-  def server : UNIXServer
-    @@debug_server ||= UNIXServer.new("debug.sock")
+  def server : TCPServer
+    @@debug_server ||= TCPServer.new("localhost", 4243)
   end
 end
 
@@ -117,6 +116,7 @@ class Crystal::Repl
         end
 
         while DebugData.messages.includes?(match) && !DebugData.disconnected?
+          sleep 0.001
           if code = DebugData.expressions.shift?
             value = run_code(code)
             STDOUT.puts SyntaxHighlighter::Colorize.highlight!(value.to_s) 

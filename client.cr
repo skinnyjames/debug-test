@@ -1,11 +1,14 @@
 require "socket"
 
+Process.new("bin/crystal", ["i", "hello.cr"], shell: false, output: STDOUT, error: STDERR)
 
-UNIXSocket.open("debug.sock") do |socket|
-  puts "Connected"
-  while msg = STDIN.gets
-    puts "PROXYING #{msg.strip} to socket"
+sleep 2
+
+while msg = STDIN.gets
+  TCPSocket.open("localhost", 4243) do |socket|
+    puts "Connected"
+    socket.sync = false
     socket << msg
-    puts socket.gets
+    socket.flush
   end
 end

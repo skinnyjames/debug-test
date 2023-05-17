@@ -325,6 +325,7 @@ class Crystal::Repl::Interpreter
     )
 
     while true
+      sleep 0.00000000001
       {% if Debug::TRACE %}
         puts "-" * 80
 
