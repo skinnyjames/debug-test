@@ -1,11 +1,13 @@
-def foo     #1
-  puts "3"  #2
+def foo   #1
+ "whooa"
 end         #3
             #4
-sleep 30    #5
-            #6
-puts "hello"#7
-            #8
-c = "cat"   #9
-a = 1       #10
-b = 2       #11
+puts "zz.." #5
+puts "okay"
+            #7
+puts "hello"#8
+            #9
+c = "cat"   #10
+a = 1       #11
+b = 2       #12
+

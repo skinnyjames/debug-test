@@ -1,98 +1,28 @@
-class DebugData
-  @@messages = [] of String
-  @@expressions = [] of String
-  @@disconnect = false
 
-  def self.add_message(message)
-    @@messages << message
-  end
-
-  def self.disconnect
-    @@disconnect = true
-  end
-
-  def self.disconnected?
-    @@disconnect
-  end
-
-  def self.add_expression(expression)
-    @@expressions << expression
-  end
-
-  def self.messages
-    @@messages
-  end
-
-  def self.expressions
-    @@expressions
-  end
-end
+require "./debug_adapter_protocol/*"
 
 class DebugEmitter
-  @block : Proc(Crystal::ASTNode, Nil)?
+  property active : Bool = false
 
-  def on_emit(&block : Proc(Crystal::ASTNode, Nil))
+  @block : Proc(Crystal::ASTNode,Crystal::Repl::Interpreter, Pointer(UInt8), Crystal::Repl::CompiledInstructions, Pointer(UInt8), Pointer(UInt8), Nil)?
+ # node, self, ip, instructions, stack_bottom, stack
+  def on_emit(&block : Proc(Crystal::ASTNode, Crystal::Repl::Interpreter, Pointer(UInt8), Crystal::Repl::CompiledInstructions, Pointer(UInt8), Pointer(UInt8),  Nil))
     @block = block
   end
 
-  def emit(callstack)
+  def emit(callstack, inter, ip, instructions, stack_bottom, stack)
     if node = callstack
-     @block.try(&.call(node))
+     @block.try(&.call(node, inter, ip, instructions, stack_bottom, stack))
     end
-  end
-end
-
-class DebugServer
-  @@debug_server : TCPServer?
-  
-  def start
-    spawn start_server(server)
-  end
-
-  def quit
-    server.close
-  end
-
-  def handle_client(client)
-    client.sync = true
-    message = client.gets
-    args = message.try(&.split("/")) || [nil, nil]
-    type = args[0]? || "Bad"
-    msg = args[1]? || "Bad"
-    if type == "RMBP"
-      DebugData.messages.delete(msg.strip)
-      #client.puts "Removing breakpoint\n"
-    elsif type == "ADDBP"
-      DebugData.messages << msg.strip
-      #client.puts "Adding breakpoint\n"
-    elsif type == "EXP"
-      DebugData.expressions << msg.strip
-      #client.puts "Evaulating\n"
-    elsif type == "DIS"
-      DebugData.disconnect
-      #client.puts "Disconnecting\n"
-    else
-      puts "Invalid"
-      #client.puts "Invalid\n"
-    end
-  end
-
-  def start_server(server)
-    while client = server.accept?
-      spawn handle_client(client)
-    end
-  end
-
-  def server : TCPServer
-    @@debug_server ||= TCPServer.new("localhost", 4243)
   end
 end
 
 class Crystal::Repl
   property prelude : String = "prelude"
+  property debug_port : Int32? = nil
   getter program : Program
   getter context : Context
-  getter server : DebugServer
+  getter server : DebugAdapterProtocol::Server
 
 
   def initialize
@@ -101,31 +31,46 @@ class Crystal::Repl
     @main_visitor = MainVisitor.new(@program)
     @emitter = DebugEmitter.new
     @debug_channel = Channel(Symbol).new
-    @server = DebugServer.new
+    @server = DebugAdapterProtocol::Server.new
     @interpreter = Interpreter.new(@context, emitter: @emitter)
 
-    @emitter.on_emit do |node|
+    @emitter.on_emit do |node, inter, ip, instructions, stack_bottom, stack|
       begin
-        filename = node.location.try(&.filename)
-        lineno = node.location.try(&.line_number)
+        filename = node.location.try(&.filename.to_s)
+        lineno = node.location.try(&.line_number.to_s)
         
         match = "#{filename}:#{lineno}"
 
-        if DebugData.messages.includes?(match)
+        if DebugAdapterProtocol::Data.has_breakpoint?(filename, lineno)
           STDOUT.puts "Breaking on #{match}\n"
+          DebugAdapterProtocol::Data.stop!(filename.not_nil!, lineno.not_nil!)
         end
 
-        while DebugData.messages.includes?(match) && !DebugData.disconnected?
-          sleep 0.001
-          if code = DebugData.expressions.shift?
-            value = run_code(code)
-            STDOUT.puts SyntaxHighlighter::Colorize.highlight!(value.to_s) 
+        loop do
+          break unless DebugAdapterProtocol::Data.stopped?
+          break if DebugAdapterProtocol::Data.disconnected?
+
+          if req = DebugAdapterProtocol::Data.expressions.shift?
+            if code = req.arguments.try(&.expression)
+
+              str = inter.interpret_from_debug(code, ip, instructions, stack_bottom, stack) || "<nil>"
+              DebugAdapterProtocol::Data.expression_value_block.try(&.call(str, req))
+            end
+          else
+            # dunno
           end
+
+          sleep 0.000001
+
         end
       rescue ex : Exception
-        puts ex
+        puts "Exception: #{ex}"
       end
     end
+  end
+
+  def copy_experiment(input, inter, ip, instructions, stack_bottom, stack) : String?
+    inter.interpret_from_debug(input, ip, instructions, stack_bottom, stack)
   end
 
   def run
@@ -162,33 +107,44 @@ class Crystal::Repl
   end
 
   def run_file(filename, argv)
-
     @interpreter.argv = argv
 
     prelude_node = parse_prelude
 
-    server.start
+    if debug_port
+      server.start(debug_port.not_nil!)
+      loop do
+        break if DebugAdapterProtocol::Data.ready?
+
+        sleep 0.000000001
+      end
+    end
 
     other_node = parse_file(filename)
     file_node = FileNode.new(other_node, filename)
     exps = Expressions.new([prelude_node, file_node] of ASTNode)
     
-    interpret_and_exit_on_error(exps)
+    if debug_port
+      @emitter.active = true
+      interpret_and_exit_on_error(exps, emit: true)
+    else
+      interpret_and_exit_on_error(exps)
+    end
 
-    server.quit
+    server.quit(debug_port.not_nil!) if debug_port
 
     # Explicitly call exit at the end so at_exit handlers run
     interpret_exit
   end
 
-  def run_code(code, argv = [] of String)
+  def run_code(code, argv = [] of String, *, emit : Bool = false) : Value
     @interpreter.argv = argv
 
     prelude_node = parse_prelude
     other_node = parse_code(code)
     exps = Expressions.new([prelude_node, other_node] of ASTNode)
 
-    interpret(exps)
+    interpret(exps, emit: emit)
   end
 
   private def load_prelude
@@ -197,17 +153,17 @@ class Crystal::Repl
     interpret_and_exit_on_error(node)
   end
 
-  private def interpret(node : ASTNode)
+  private def interpret(node : ASTNode, *, emit : Bool = false)
     @main_visitor = MainVisitor.new(from_main_visitor: @main_visitor)
 
     node = @program.normalize(node)
     node = @program.semantic(node, main_visitor: @main_visitor)
 
-    @interpreter.interpret(node, @main_visitor.meta_vars)
+    @interpreter.interpret(node, @main_visitor.meta_vars, emit: emit)
   end
 
-  private def interpret_and_exit_on_error(node : ASTNode)
-    interpret(node)
+  private def interpret_and_exit_on_error(node : ASTNode, emit : Bool = false)
+    interpret(node, emit: emit)
   rescue ex : EscapingException
     # First run at_exit handlers by calling Crystal.exit
     interpret_crystal_exit(ex)

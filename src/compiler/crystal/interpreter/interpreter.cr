@@ -174,7 +174,7 @@ class Crystal::Repl::Interpreter
 
   # compiles the given code to bytecode, then interprets it by assuming the local variables
   # are defined in `meta_vars`.
-  def interpret(node : ASTNode, meta_vars : MetaVars, scope : Type? = nil, in_pry : Bool = false) : Value
+  def interpret(node : ASTNode, meta_vars : MetaVars, scope : Type? = nil, in_pry : Bool = false, *, emit : Bool = false) : Value
     compiled_def = @compiled_def
 
     # Declare or migrate local variables
@@ -251,7 +251,7 @@ class Crystal::Repl::Interpreter
       end
     {% end %}
 
-    value = interpret(node, node.type)
+    value = interpret(node, node.type, emit: emit)
 
     finished_hooks.each do |finished_hook|
       interpret(finished_hook.node, meta_vars, finished_hook.scope.metaclass)
@@ -260,7 +260,7 @@ class Crystal::Repl::Interpreter
     value
   end
 
-  private def interpret(node : ASTNode, node_type : Type) : Value
+  private def interpret(node : ASTNode, node_type : Type, emit : Bool = false) : Value
     # The stack is used like this:
     #
     # [.........., ...........]
@@ -325,7 +325,6 @@ class Crystal::Repl::Interpreter
     )
 
     while true
-      sleep 0.00000000001
       {% if Debug::TRACE %}
         puts "-" * 80
 
@@ -340,14 +339,22 @@ class Crystal::Repl::Interpreter
         Disassembler.disassemble_one(@context, instructions, offset, current_local_vars, STDOUT)
         puts
       {% end %}
-
+      
       # NO WAMMYS
       offset = (ip - instructions.instructions.to_unsafe).to_i32
       if node = instructions.nodes[offset]?
-        # emit the instruction stuff no whammys
-        @emitter.try(&.emit(node))
-      end
 
+      if @emitter.try(&.active) 
+        sleep 0.00000000001
+        if emit
+            pry_max_target_frame = @pry_max_target_frame
+
+            # emit the instruction stuff no whammys
+            @emitter.try(&.emit(node, self, ip, instructions, stack_bottom, stack))
+          end
+        end
+      end
+      
       if @pry
         pry_max_target_frame = @pry_max_target_frame
         if !pry_max_target_frame || @call_stack.last.real_frame_index <= pry_max_target_frame
@@ -1174,6 +1181,101 @@ class Crystal::Repl::Interpreter
     # We directly resume the next fiber.
     # TODO: is this okay? We totally ignore the scheduler here!
     new_fiber.resume
+  end
+
+  def interpret_from_debug(code, ip, instructions, stack_bottom, stack)
+    offset = (ip - instructions.instructions.to_unsafe).to_i32
+    node = instructions.nodes[offset]?
+    pry_node = @pry_node
+
+    return unless node
+
+    location = node.location
+    return unless location
+
+
+    call_frame = @call_stack.last
+    compiled_def = call_frame.compiled_def
+    compiled_block = call_frame.compiled_block
+    local_vars = compiled_block.try(&.local_vars) || compiled_def.local_vars
+
+    a_def = compiled_def.def
+    #more 
+    original_local_vars_max_bytesize = local_vars.max_bytesize
+    data_size = stack - (stack_bottom + original_local_vars_max_bytesize)
+    data = Pointer(Void).malloc(data_size).as(UInt8*)
+    data.copy_from(stack_bottom + original_local_vars_max_bytesize, data_size)
+
+    gatherer = LocalVarsGatherer.new(location, a_def)
+    gatherer.gather
+    meta_vars = gatherer.meta_vars
+
+    meta_vars.each do |name, var|
+      var_type = var.type?
+      var.freeze_type = var_type if var_type
+    end
+
+    block_level = local_vars.block_level
+    owner = compiled_def.owner
+
+    closure_context =
+      if compiled_block
+        compiled_block.closure_context
+      else
+        compiled_def.closure_context
+      end
+
+    closure_context.try &.vars.each do |name, (index, type)|
+      meta_vars[name] = MetaVar.new(name, type)
+    end
+
+    main_visitor = MainVisitor.new(
+      @context.program,
+      vars: meta_vars,
+      meta_vars: meta_vars,
+      typed_def: a_def)
+
+    # Scope is used for instance types, never for Program
+    unless owner.is_a?(Program)
+      main_visitor.scope = owner
+    end
+
+    main_visitor.path_lookup = owner
+
+    interpreter = Interpreter.new(self, compiled_def, local_vars, closure_context, stack_bottom, block_level)
+
+    # do the thing!
+    parser = Parser.new(
+      code,
+      string_pool: interpreter.context.program.string_pool,
+      var_scopes: [meta_vars.keys.to_set],
+    )
+    line_node = parser.parse
+
+    return if !line_node
+
+    main_visitor = MainVisitor.new(from_main_visitor: main_visitor)
+
+    vars_size_before_semantic = main_visitor.vars.size
+
+    line_node = interpreter.context.program.normalize(line_node)
+    line_node = interpreter.context.program.semantic(line_node, main_visitor: main_visitor)
+
+    vars_size_after_semantic = main_visitor.vars.size
+
+    if vars_size_after_semantic > vars_size_before_semantic
+      # These are all temporary variables created by MainVisitor.
+      # Let's add them to local vars.
+      main_visitor.vars.each_with_index do |(name, var), index|
+        next unless index >= vars_size_before_semantic
+
+        interpreter.local_vars.declare(name, var.type)
+      end
+    end
+
+    val = interpreter.interpret(line_node, meta_vars, in_pry: true).to_s
+    (stack_bottom + original_local_vars_max_bytesize).copy_from(data, data_size)
+    val
   end
 
   private def pry(ip, instructions, stack_bottom, stack)

@@ -24,6 +24,10 @@ class Crystal::Command
         exit
       end
 
+      opts.on("--debug-port ", "Spin up a debugging server on given port") do |port|
+        repl.debug_port = port.to_i32
+      end
+
       opts.on("--no-color", "Disable colored output") do
         @color = false
         repl.program.color = false
