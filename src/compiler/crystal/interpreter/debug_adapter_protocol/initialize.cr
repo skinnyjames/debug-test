@@ -6,7 +6,7 @@ module DebugAdapterProtocol
     InitializeRequestArguments,
     clientId : String?,
     clientName : String?,
-    adapterId : String,
+    adapterId : String?,
     locale : String?,
     lineStartAt1 : Bool?,
     columnStartAt1 : Bool?,

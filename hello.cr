@@ -1,13 +1,14 @@
-def foo   #1
+def foo   
  "whooa"
-end         #3
-            #4
-puts "zz.." #5
-puts "okay"
-            #7
-puts "hello"#8
-            #9
-c = "cat"   #10
-a = 1       #11
-b = 2       #12
+end
+   
+c = "cat"   
+a = 1       
+b = 2
+
+["one", "two", "three", "four"].each do |n|
+  puts n
+end
+
+puts "finished!"
 

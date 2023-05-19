@@ -47,6 +47,7 @@ module DebugAdapterProtocol
     include JSON::Serializable
 
     def generate_id
+      Digest::M
     end
   end
 

@@ -1,0 +1,122 @@
+{
+  "name": "skinnyjames-crystal",
+  "displayName": "skinnyjames-crystal-debug",
+  "description": "",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.78.0",
+    "node": "^7.9.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "activationEvents": ["onDebug", "onCommand:extension.skinnyjames-crystal.getProgramName"],
+  "main": "./src/extension.js",
+  "enabledApiProposals": ["extensionRuntime"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "extension.skinnyjames-crystal.helloWorld",
+        "title": "Hello World"
+      },
+      {
+        "command": "extension.skinnyjames-crystal.debugEditorContents",
+        "title": "Debug file",
+        "category": "Crystal Debug",
+        "enablement": "!inDebugMode",
+        "icon": "${debug-alt)"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "crystal"
+      },
+      {
+        "language": "Crystal"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "crystal",
+        "label": "Crystal",
+        "languages": [
+          "crystal", "Crystal"
+        ],
+        "program": "./src/debugAdapter.js",
+        "runtime": "node",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program", "port"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to a crystal file",
+                "default": "${workspaceFolder}/${command:AskForProgramName}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Automatically stop after launch.",
+                "default": true
+              },
+              "debugger": {
+                "type": "string",
+                "description": "Path to Crystal executable",
+                "default": "/home/seangregory/src/tests/crystal-debug-test/bin/crystal"
+              },
+              "debuggerPort": {
+                "type": "string",
+                "description": "TCP port or the server",
+                "default": "4343"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "crystal",
+            "request": "launch",
+            "name": "Crystal debug (new)",
+            "program": "${workspaceFolder}/${command:AskForProgramName}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Crystal debug (new): Launch",
+            "description": "Debug a Crystal program!",
+            "body": {
+              "type": "crystal",
+              "request": "launch",
+              "name": "Crystal debug Launch",
+              "program": "${file}",
+              "port": "${command:AskForPort}"
+            }
+          }
+        ],
+        "variables": {"AskForProgramName": "extension.skinnyjames-crystal.getProgramName", "AskForPort": "extension.skinnyjames-crystal.getPort" }
+      }
+    ]
+  },
+
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "node ./test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "16.x",
+    "@types/vscode": "^1.78.0",
+    "@vscode/test-electron": "^2.3.0",
+    "eslint": "^8.36.0",
+    "glob": "^8.1.0",
+    "mocha": "^10.2.0",
+    "typescript": "^4.9.5"
+  },
+  "dependencies": {
+    "@vscode/debugadapter": "^1.59.0",
+    "node-debugprotocol-client": "^0.5.1"
+  }
+}

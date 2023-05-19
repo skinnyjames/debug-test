@@ -153,7 +153,8 @@ module DebugAdapterProtocol
   
     # sends an initalized event to the IDE.
     protected def send_initialized_event(client)
-      client << Event(Nil).new("initialize").to_message
+      msg = Event(Nil).new("initialized", nil).to_message
+      client << msg
     end
 
     # only should respond to a setBreakpoints request.
@@ -164,12 +165,16 @@ module DebugAdapterProtocol
         # break out of loop here
         if type == "request" && command == "configurationDone"
           client << Response(Nil).new(request_seq: seq, command: command, success: true, body: nil).to_message
+          Data.ready!
+
           break
         end
 
         if type != "request" && command != "setBreakpoints"
           client << error(seq, command, "Can only call setBreakpoints :(")
         end
+
+        puts "Setbreakpoints no source?: #{json}"
 
         breakpoints_request = Request(SetBreakpointsArguments).from_json(json)
         breakpoints_request.arguments.try do |args|
@@ -236,9 +241,10 @@ module DebugAdapterProtocol
       seq, type, command, json = parse_dap(client)
 
       if type == "request" && ["launch", "attach"].includes?(command)
-        Data.ready!
+        puts "responding to #{command}"
         client << Response(Nil).new(request_seq: seq, command: command, success: true, body: nil).to_message
       elsif type == "request"
+        puts "Error on #{command}"
         client << error(seq, command, "#{command} is not supported")
       end
     end
@@ -300,6 +306,22 @@ module DebugAdapterProtocol
             client << res.to_message
             Data.resume!
             break          
+          elsif type == "request" && command == "setBreakpoints"
+            breakpoints_request = Request(SetBreakpointsArguments).from_json(json)
+            breakpoints_request.arguments.try do |args|
+              args.breakpoints.try do |breakpoints|
+                args.source.path.try do |path|
+                  Data.breakpoints[path] = breakpoints.map do |bp|
+                    id = Data.increment_bp_count
+
+                    { id, bp }
+                  end
+                end
+              end
+            end
+
+            res = Data.to_breakpoints_response(seq)
+            client << res.to_message
           else
             puts "invalid repl state"
             sleep 1
@@ -328,9 +350,10 @@ module DebugAdapterProtocol
   
     def handle_client(client)
       receive_initialize_request(client)
-      send_initialized_event(client)
-      receive_configuration_request(client)
       receive_launch_or_attach_request(client)
+      send_initialized_event(client)
+
+      receive_configuration_request(client)
       puts "Starting subscription loop"
       subscription_loop(client)
     end
