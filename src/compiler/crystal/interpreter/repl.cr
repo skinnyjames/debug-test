@@ -4,13 +4,13 @@ require "./debug_adapter_protocol/*"
 class DebugEmitter
   property active : Bool = false
 
-  @block : Proc(Crystal::ASTNode,Crystal::Repl::Interpreter, Pointer(UInt8), Crystal::Repl::CompiledInstructions, Pointer(UInt8), Pointer(UInt8), Nil)?
+  @block : Proc(Array(Tuple(String, String, String)),Crystal::Repl::Interpreter, Pointer(UInt8), Crystal::Repl::CompiledInstructions, Pointer(UInt8), Pointer(UInt8), Nil)?
  # node, self, ip, instructions, stack_bottom, stack
-  def on_emit(&block : Proc(Crystal::ASTNode, Crystal::Repl::Interpreter, Pointer(UInt8), Crystal::Repl::CompiledInstructions, Pointer(UInt8), Pointer(UInt8),  Nil))
+  def on_emit(&block : Proc(Array(Tuple(String, String, String)), Crystal::Repl::Interpreter, Pointer(UInt8), Crystal::Repl::CompiledInstructions, Pointer(UInt8), Pointer(UInt8),  Nil))
     @block = block
   end
 
-  def emit(callstack, inter, ip, instructions, stack_bottom, stack)
+  def emit(callstack : Array(Tuple(String, String, String)), inter, ip, instructions, stack_bottom, stack)
     if node = callstack
      @block.try(&.call(node, inter, ip, instructions, stack_bottom, stack))
     end
@@ -34,16 +34,30 @@ class Crystal::Repl
     @server = DebugAdapterProtocol::Server.new
     @interpreter = Interpreter.new(@context, emitter: @emitter)
 
-    @emitter.on_emit do |node, inter, ip, instructions, stack_bottom, stack|
+    @emitter.on_emit do |backtrace, inter, ip, instructions, stack_bottom, stack|
       begin
-        filename = node.location.try(&.filename.to_s)
-        lineno = node.location.try(&.line_number.to_s)
-        
-        match = "#{filename}:#{lineno}"
 
-        if DebugAdapterProtocol::Data.has_breakpoint?(filename, lineno)
-          STDOUT.puts "Breaking on #{match}\n"
-          DebugAdapterProtocol::Data.stop!(filename.not_nil!, lineno.not_nil!)
+        # filename = nil
+        # lineno = nil
+
+        # if location = node.location
+        #   location = location.expanded_location || location
+        #   filename = location.filename.as(String)
+        #   lineno = location.line_number.to_s
+        #   column_number = location.column_number
+        # end
+
+
+        # puts match
+
+        backtrace.each do |filename, lineno, column|
+          puts "#{filename}:#{lineno}"
+
+          if DebugAdapterProtocol::Data.has_breakpoint?(filename, lineno)
+            match = "#{filename}:#{lineno}"
+            STDOUT.puts "Breaking on #{match}\n"
+            DebugAdapterProtocol::Data.stop!(filename.not_nil!, lineno.not_nil!)
+          end
         end
 
         loop do
@@ -52,8 +66,9 @@ class Crystal::Repl
 
           if req = DebugAdapterProtocol::Data.expressions.shift?
             if code = req.arguments.try(&.expression)
-
+              puts "before debug"
               str = inter.interpret_from_debug(code, ip, instructions, stack_bottom, stack) || "<nil>"
+              puts "after debug"
               DebugAdapterProtocol::Data.expression_value_block.try(&.call(str, req))
             end
           else
@@ -67,10 +82,6 @@ class Crystal::Repl
         puts "Exception: #{ex}"
       end
     end
-  end
-
-  def copy_experiment(input, inter, ip, instructions, stack_bottom, stack) : String?
-    inter.interpret_from_debug(input, ip, instructions, stack_bottom, stack)
   end
 
   def run

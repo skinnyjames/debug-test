@@ -341,16 +341,46 @@ class Crystal::Repl::Interpreter
       {% end %}
       
       # NO WAMMYS
-      offset = (ip - instructions.instructions.to_unsafe).to_i32
-      if node = instructions.nodes[offset]?
-
       if @emitter.try(&.active) 
-        sleep 0.00000000001
-        if emit
+        offset = (ip - instructions.instructions.to_unsafe).to_i32
+        if node = instructions.nodes[offset]?
+          sleep 0.00000000001
+          if emit && !DebugAdapterProtocol::Data.stopped?
+
+            puts "Emitting!"
             pry_max_target_frame = @pry_max_target_frame
 
-            # emit the instruction stuff no whammys
-            @emitter.try(&.emit(node, self, ip, instructions, stack_bottom, stack))
+            begin
+              # backtrace = @call_stack.reduce([] of Tuple(String, String, String)) do |bt, cf|
+              #   offset = (cf.ip - cf.instructions.instructions.to_unsafe).to_i32
+              #   node = cf.instructions.nodes[offset]?
+                
+              #   if location = node.try(&.location)
+              #     location = location.expanded_location || location
+              #     filename = location.filename.as(String)
+              #     lineno = location.line_number.to_s
+              #     column_number = location.column_number.to_s || "0"
+
+              #     bt << { filename, lineno, column_number }
+              #   end
+
+              #   bt
+              # end
+
+              if location = node.try(&.location)
+                filename = (location.expanded_location || location).filename.as(String)
+                lineno = location.line_number.to_s
+                column_number = location.column_number.to_s || "0"
+
+                backtrace = { filename, lineno, column_number }
+
+                # emit the instruction stuff no whammys
+                @emitter.try(&.emit([backtrace], self, ip, instructions, stack_bottom, stack))
+              end
+
+            rescue ex
+              puts ex
+            end
           end
         end
       end
@@ -1193,13 +1223,14 @@ class Crystal::Repl::Interpreter
     location = node.location
     return unless location
 
-
     call_frame = @call_stack.last
     compiled_def = call_frame.compiled_def
     compiled_block = call_frame.compiled_block
     local_vars = compiled_block.try(&.local_vars) || compiled_def.local_vars
 
     a_def = compiled_def.def
+    whereami(a_def, location)
+
     #more 
     original_local_vars_max_bytesize = local_vars.max_bytesize
     data_size = stack - (stack_bottom + original_local_vars_max_bytesize)
@@ -1244,36 +1275,42 @@ class Crystal::Repl::Interpreter
 
     interpreter = Interpreter.new(self, compiled_def, local_vars, closure_context, stack_bottom, block_level)
 
-    # do the thing!
-    parser = Parser.new(
-      code,
-      string_pool: interpreter.context.program.string_pool,
-      var_scopes: [meta_vars.keys.to_set],
-    )
-    line_node = parser.parse
+    begin
+      # do the thing!
+      parser = Parser.new(
+        code,
+        string_pool: interpreter.context.program.string_pool,
+        var_scopes: [meta_vars.keys.to_set],
+      )
+      line_node = parser.parse
 
-    return if !line_node
+      return if !line_node
 
-    main_visitor = MainVisitor.new(from_main_visitor: main_visitor)
+      main_visitor = MainVisitor.new(from_main_visitor: main_visitor)
 
-    vars_size_before_semantic = main_visitor.vars.size
+      vars_size_before_semantic = main_visitor.vars.size
 
-    line_node = interpreter.context.program.normalize(line_node)
-    line_node = interpreter.context.program.semantic(line_node, main_visitor: main_visitor)
+      line_node = interpreter.context.program.normalize(line_node)
+      line_node = interpreter.context.program.semantic(line_node, main_visitor: main_visitor)
 
-    vars_size_after_semantic = main_visitor.vars.size
+      vars_size_after_semantic = main_visitor.vars.size
 
-    if vars_size_after_semantic > vars_size_before_semantic
-      # These are all temporary variables created by MainVisitor.
-      # Let's add them to local vars.
-      main_visitor.vars.each_with_index do |(name, var), index|
-        next unless index >= vars_size_before_semantic
+      if vars_size_after_semantic > vars_size_before_semantic
+        # These are all temporary variables created by MainVisitor.
+        # Let's add them to local vars.
+        main_visitor.vars.each_with_index do |(name, var), index|
+          next unless index >= vars_size_before_semantic
 
-        interpreter.local_vars.declare(name, var.type)
+          interpreter.local_vars.declare(name, var.type)
+        end
       end
-    end
 
-    val = interpreter.interpret(line_node, meta_vars, in_pry: true).to_s
+      puts meta_vars
+
+      val = interpreter.interpret(line_node, meta_vars, in_pry: true).to_s
+    rescue ex : Exception
+      val = ex.to_s
+    end
     (stack_bottom + original_local_vars_max_bytesize).copy_from(data, data_size)
     val
   end
